@@ -1,0 +1,16 @@
+# Custom domains and IP/CIDR list
+# One entry per line. Lines starting with # are comments.
+#
+# Supported formats:
+#   example.com          — domain (added to dnsmasq ipset rules)
+#   1.2.3.4              — single IP (added directly to ipset)
+#   1.2.3.0/24           — CIDR range (added directly to ipset)
+#
+# Domains are resolved by dnsmasq and IPs added to ipset dynamically.
+# IP/CIDR entries are loaded into ipset at startup for services
+# that use dedicated IP ranges not discoverable via DNS alone.
+
+# ── Examples ──
+# mysite.com
+# vpn-service.example.org
+# 203.0.113.0/24

@@ -1,0 +1,79 @@
+#!/bin/sh
+# hysteria-keenetic configuration
+# Copy this file to 'config' and edit:
+#   cp config.example config
+#   vi config
+
+# ── Hysteria Server (REQUIRED) ────────────────────────────────────
+HY_SERVER="your-server.com:443"
+HY_PASSWORD="your-password-here"
+
+# ── Services to unblock ──────────────────────────────────────────
+# Comma-separated list. See README for full list of available services.
+# "custom" loads domains from custom-domains.txt
+SERVICES="Youtube,Google,Facebook,Twitter,Instagram,Telegram,Discord,Openai,Github Copilot,custom"
+
+# ── Network ──────────────────────────────────────────────────────
+LAN_IF="br0"
+DNSMASQ_PORT=5300
+
+# ── Force DNS through dnsmasq ────────────────────────────────────
+# Block DNS-over-HTTPS (DoH) and DNS-over-TLS (DoT) from LAN devices.
+# Modern devices/browsers use encrypted DNS, bypassing our dnsmasq.
+# This forces them to use regular DNS (port 53) which we redirect.
+# Set to 0 to disable (not recommended).
+FORCE_DNS=1
+
+# ── Policy routing ────────────────────────────────────────────────
+# fwmark and routing table for UDP TPROXY policy routing.
+# UDP traffic to unblocked IPs gets marked with FWMARK and routed
+# to local loopback via the specified routing table, where sing-box
+# TPROXY listener picks it up. TCP uses nat REDIRECT (no fwmark needed).
+FWMARK=2
+ROUTE_TABLE=101
+
+# ── sing-box stack ───────────────────────────────────────────────
+# TCP/IP stack for sing-box inbounds.
+# "mixed" (default) — recommended for most setups.
+# "gvisor" — full userspace TCP+UDP (most compatible, slightly more CPU).
+# "system" — kernel TCP+UDP (least CPU, but kernel bugs may affect TCP).
+SINGBOX_STACK="mixed"
+
+# ── Hysteria bandwidth (Brutal CC) ──────────────────────────────
+# Client's upload/download bandwidth. Enables Brutal congestion control.
+# Set to "0" to disable Brutal CC and use BBR (auto-detect, conservative).
+# Recommended: set close to your actual ISP bandwidth for best results.
+# Too high = packet loss, too low = underutilization.
+HY_BW_UP="50 mbps"
+HY_BW_DOWN="100 mbps"
+
+# ── TLS ──────────────────────────────────────────────────────────
+# Set to 1 if your server uses a self-signed certificate.
+# Not needed when using ACME (Let's Encrypt) or a valid domain cert.
+HY_TLS_INSECURE=0
+
+# ── Obfuscation (anti-DPI) ─────────────────────────────────────
+# Salamander obfuscation disguises QUIC traffic as random UDP.
+# Prevents ISP DPI from detecting and throttling/killing QUIC connections.
+# Must match the server config. Leave empty to disable.
+HY_OBFS_PASSWORD=""
+
+# ── QUIC tuning ──────────────────────────────────────────────────
+# Enable large QUIC receive windows for high-bandwidth connections.
+# Set to 1 to enable (8MB stream / 20MB connection windows).
+# Recommended for connections above 50 Mbps. Must match server config.
+HY_QUIC_TUNING=0
+
+# ── Domain list source ─────────────────────────────────────────
+# Pre-built lists from GitHub Releases (domains + CIDRs per service).
+# Override for self-hosted fork/mirror:
+# LISTS_REPO="your-user/hysteria-keenetic"
+
+# ── Auto-update schedule (cron) ──────────────────────────────────
+# Format: minute hour day month weekday
+# Lists are checked via manifest — if no changes on server,
+# nothing is downloaded (fast no-op check).
+CRON_SCHEDULE="0 4 * * *"
+# Default: daily at 4:00 AM
+# Use "0 4 * * 1" for weekly (every Monday)
+# Use "0 */6 * * *" for every 6 hours
