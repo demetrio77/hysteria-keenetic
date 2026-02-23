@@ -229,6 +229,12 @@ log "Init script: $INIT_SCRIPT"
 ln -sf "$INSTALL_DIR/scripts/manage.sh" /opt/bin/hysteria-keenetic 2>/dev/null
 log "Command: hysteria-keenetic {start|stop|restart|update|upgrade|status}"
 
+# NDM netfilter hook — restores iptables rules when Keenetic rebuilds firewall
+mkdir -p /opt/etc/ndm/netfilter.d
+cp "$SCRIPT_DIR/scripts/netfilter-hook.sh" /opt/etc/ndm/netfilter.d/100-hysteria.sh
+chmod +x /opt/etc/ndm/netfilter.d/100-hysteria.sh
+log "Netfilter hook: /opt/etc/ndm/netfilter.d/100-hysteria.sh"
+
 # ── Cron job ──────────────────────────────────────────────────────
 
 . "$INSTALL_DIR/config"

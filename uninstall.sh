@@ -140,6 +140,9 @@ rm -f /opt/bin/hysteria-keenetic
 rm -f /opt/bin/hysteria
 rm -rf "$INSTALL_DIR"
 
+# NDM netfilter hook
+rm -f /opt/etc/ndm/netfilter.d/100-hysteria.sh
+
 # dnscrypt-proxy config
 rm -f /opt/etc/dnscrypt-proxy.toml
 rm -rf /opt/etc/dnscrypt-proxy

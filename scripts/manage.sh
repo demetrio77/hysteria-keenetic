@@ -84,6 +84,69 @@ _add_private_ip_rules() {
     done
 }
 
+# ── iptables setup (used by start and netfilter.d hook) ──────────
+
+setup_iptables() {
+    # === TCP: REDIRECT to sing-box (nat PREROUTING) ===
+    iptables -t nat -N HYSTERIA_REDIRECT 2>/dev/null
+    iptables -t nat -F HYSTERIA_REDIRECT
+
+    _add_private_ip_rules nat HYSTERIA_REDIRECT
+
+    iptables -t nat -A HYSTERIA_REDIRECT -p tcp -j REDIRECT --to-ports "$REDIRECT_PORT"
+
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT 2>/dev/null
+    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT
+
+    # === UDP: TPROXY to sing-box (mangle PREROUTING) ===
+    load_tproxy_modules
+    iptables -t mangle -N HYSTERIA_TPROXY 2>/dev/null
+    iptables -t mangle -F HYSTERIA_TPROXY
+
+    _add_private_ip_rules mangle HYSTERIA_TPROXY
+
+    iptables -t mangle -A HYSTERIA_TPROXY -p udp -j TPROXY --on-port "$TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK"
+
+    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY 2>/dev/null
+    iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY
+
+    # Policy routing for TPROXY
+    ip rule del fwmark "0x$FWMARK" table "$ROUTE_TABLE" 2>/dev/null
+    ip rule add fwmark "0x$FWMARK" table "$ROUTE_TABLE"
+    ip route replace local default dev lo table "$ROUTE_TABLE"
+
+    # === DNS: redirect LAN DNS to our dnsmasq ===
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
+    iptables -t nat -I PREROUTING 2 -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
+
+    # === Force DNS (block DoH/DoT) ===
+    if [ "$FORCE_DNS" = "1" ]; then
+        ipset create force_dns hash:ip 2>/dev/null
+        ipset flush force_dns 2>/dev/null
+        for ip in \
+            8.8.8.8 8.8.4.4 \
+            1.1.1.1 1.0.0.1 \
+            9.9.9.9 149.112.112.112 \
+            208.67.222.222 208.67.220.220 \
+            94.140.14.14 94.140.15.15 \
+            185.228.168.9 185.228.169.9; do
+            ipset add force_dns "$ip" 2>/dev/null
+        done
+
+        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null
+        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j DROP 2>/dev/null
+        iptables -I FORWARD 1 -i "$LAN_IF" -p tcp --dport 853 -j DROP
+        iptables -I FORWARD 2 -i "$LAN_IF" -p udp --dport 853 -j DROP
+
+        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
+        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
+        iptables -I FORWARD 3 -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP
+        iptables -I FORWARD 4 -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP
+    fi
+}
+
 # ── Start ────────────────────────────────────────────────────────
 
 do_start() {
@@ -199,86 +262,12 @@ _start_internal() {
         fi
     fi
 
-    # ── 6. iptables ──
-
-    # === TCP: REDIRECT to sing-box (nat PREROUTING) ===
-    # REDIRECT changes destination to localhost:port, sing-box recovers
-    # original dst via SO_ORIGINAL_DST. Different kernel path than TPROXY —
-    # avoids kernel 4.9 TPROXY TCP bugs with long-lived connections (SSE).
-    iptables -t nat -N HYSTERIA_REDIRECT 2>/dev/null
-    iptables -t nat -F HYSTERIA_REDIRECT
-
-    # Skip private/special ranges
-    _add_private_ip_rules nat HYSTERIA_REDIRECT
-
-    # Redirect TCP to sing-box
-    iptables -t nat -A HYSTERIA_REDIRECT -p tcp -j REDIRECT --to-ports "$REDIRECT_PORT"
-
-    # Insert BEFORE Keenetic's _NDM_DNAT chain (position 1)
-    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT 2>/dev/null
-    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT
-
+    # ── 6. iptables (TCP REDIRECT + UDP TPROXY + DNS + DoH/DoT) ──
+    setup_iptables
     log "  iptables: TCP REDIRECT to :$REDIRECT_PORT"
-
-    # === UDP: TPROXY to sing-box (mangle PREROUTING) ===
-    # TPROXY for UDP works fine on kernel 4.9 (QUIC/YouTube never had issues).
-    # Policy routing sends marked packets to loopback where TPROXY socket listens.
-    iptables -t mangle -N HYSTERIA_TPROXY 2>/dev/null
-    iptables -t mangle -F HYSTERIA_TPROXY
-
-    # Skip private/special ranges
-    _add_private_ip_rules mangle HYSTERIA_TPROXY
-
-    # TPROXY UDP to sing-box with fwmark
-    iptables -t mangle -A HYSTERIA_TPROXY -p udp -j TPROXY --on-port "$TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK"
-
-    # Insert in PREROUTING (only for ipset-matched IPs)
-    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY 2>/dev/null
-    iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY
-
-    # Policy routing for TPROXY: marked packets go to local loopback
-    ip rule del fwmark "0x$FWMARK" table "$ROUTE_TABLE" 2>/dev/null
-    ip rule add fwmark "0x$FWMARK" table "$ROUTE_TABLE"
-    ip route replace local default dev lo table "$ROUTE_TABLE"
-
     log "  iptables: UDP TPROXY to :$TPROXY_PORT (fwmark 0x$FWMARK)"
-
-    # === DNS: redirect LAN DNS to our dnsmasq ===
-    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
-    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
-    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
-    iptables -t nat -I PREROUTING 2 -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
-
     log "  iptables: DNS redirect to :$DNSMASQ_PORT"
-
-    # ── 7. Force DNS through dnsmasq (block DoH/DoT) ──
-    if [ "$FORCE_DNS" = "1" ]; then
-        ipset create force_dns hash:ip 2>/dev/null
-        ipset flush force_dns 2>/dev/null
-        for ip in \
-            8.8.8.8 8.8.4.4 \
-            1.1.1.1 1.0.0.1 \
-            9.9.9.9 149.112.112.112 \
-            208.67.222.222 208.67.220.220 \
-            94.140.14.14 94.140.15.15 \
-            185.228.168.9 185.228.169.9; do
-            ipset add force_dns "$ip" 2>/dev/null
-        done
-
-        # Block DNS-over-TLS (port 853)
-        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null
-        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j DROP 2>/dev/null
-        iptables -I FORWARD 1 -i "$LAN_IF" -p tcp --dport 853 -j DROP
-        iptables -I FORWARD 2 -i "$LAN_IF" -p udp --dport 853 -j DROP
-
-        # Block DNS-over-HTTPS to known providers
-        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
-        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
-        iptables -I FORWARD 3 -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP
-        iptables -I FORWARD 4 -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP
-
-        log "  iptables: DoH/DoT blocking enabled"
-    fi
+    [ "$FORCE_DNS" = "1" ] && log "  iptables: DoH/DoT blocking enabled"
 
     # ── 8. Flush conntrack ──
     if command -v conntrack >/dev/null 2>&1; then
@@ -647,6 +636,15 @@ case "$1" in
     update)  do_update ;;
     upgrade) do_upgrade ;;
     status)  do_status ;;
+    firewall-reload)
+        # Called by /opt/etc/ndm/netfilter.d/ hook when Keenetic rebuilds firewall.
+        # Only re-apply iptables rules if sing-box is running.
+        if pidof sing-box >/dev/null 2>&1; then
+            setup_iptables
+            conntrack -F 2>/dev/null
+            log "iptables rules restored (firewall reload)"
+        fi
+    ;;
     *)
         echo "hysteria-keenetic — selective VPN routing for Keenetic"
         echo ""

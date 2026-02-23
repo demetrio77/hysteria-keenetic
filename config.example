@@ -11,7 +11,7 @@ HY_PASSWORD="your-password-here"
 # ── Services to unblock ──────────────────────────────────────────
 # Comma-separated list. See README for full list of available services.
 # "custom" loads domains from custom-domains.txt
-SERVICES="Youtube,Google,Facebook,Twitter,Instagram,Telegram,Discord,Openai,Github Copilot,custom"
+SERVICES="Antifilter community edition,ITDog Inside,Youtube,Google,Facebook,Tik-Tok,Twitter,Openai,Instagram,Torrent Trackers,Github Copilot,custom,Discord,Twitch,Online movie theaters,Telegram"
 
 # ── Network ──────────────────────────────────────────────────────
 LAN_IF="br0"
