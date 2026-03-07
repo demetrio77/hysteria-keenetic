@@ -13,6 +13,11 @@ HY_PASSWORD="your-password-here"
 # "custom" loads domains from custom-domains.txt
 SERVICES="Antifilter community edition,ITDog Inside,Youtube,Google,Facebook,Tik-Tok,Twitter,Openai,Instagram,Torrent Trackers,Github Copilot,custom,Discord,Twitch,Online movie theaters,Telegram"
 
+# ── Routing mode ──────────────────────────────────────────────────
+# "selective" — only traffic to domains in your service lists goes through VPN.
+# "all" — ALL traffic goes through VPN (except local network and VPN server).
+ROUTE_MODE="selective"
+
 # ── Network ──────────────────────────────────────────────────────
 LAN_IF="br0"
 DNSMASQ_PORT=5300

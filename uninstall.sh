@@ -47,14 +47,16 @@ LAN_IF="${LAN_IF:-br0}"
 
 log "Stopping services..."
 
-# Current: nat REDIRECT chain (TCP)
+# Current: nat REDIRECT chain (TCP) — both selective and all variants
 iptables -t nat -D PREROUTING -i "$LAN_IF" -m set --match-set "$IPSET_NAME" dst -p tcp -j HYSTERIA_REDIRECT 2>/dev/null
+iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -j HYSTERIA_REDIRECT 2>/dev/null
 iptables -t nat -F HYSTERIA_REDIRECT 2>/dev/null
 iptables -t nat -X HYSTERIA_REDIRECT 2>/dev/null
 log "  iptables: nat/REDIRECT cleaned"
 
-# Current: mangle TPROXY chain (UDP)
+# Current: mangle TPROXY chain (UDP) — both selective and all variants
 iptables -t mangle -D PREROUTING -i "$LAN_IF" -m set --match-set "$IPSET_NAME" dst -p udp -j HYSTERIA_TPROXY 2>/dev/null
+iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -j HYSTERIA_TPROXY 2>/dev/null
 iptables -t mangle -F HYSTERIA_TPROXY 2>/dev/null
 iptables -t mangle -X HYSTERIA_TPROXY 2>/dev/null
 log "  iptables: mangle/TPROXY cleaned"
@@ -80,18 +82,24 @@ ip rule del fwmark 0x1 table 100 2>/dev/null
 ip route del local default dev lo table 100 2>/dev/null
 log "  legacy rules: cleaned"
 
-# DoH/DoT blocking cleanup
+# DoH/DoT blocking cleanup (both REJECT and legacy DROP variants)
+iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
+iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j REJECT 2>/dev/null
 iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null
 iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j DROP 2>/dev/null
+iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j REJECT --reject-with tcp-reset 2>/dev/null
+iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j REJECT 2>/dev/null
 iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
 iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
 ipset destroy force_dns 2>/dev/null
 log "  iptables: DoH/DoT blocking cleaned"
 
-# DNS redirect cleanup
-iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+# DNS intercept cleanup
+iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j TPROXY --on-port 5302 --tproxy-mark "0x$FWMARK/0x$FWMARK" 2>/dev/null
 iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
-log "  iptables: DNS redirect cleaned"
+# Legacy: old UDP REDIRECT
+iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+log "  iptables: DNS intercept cleaned"
 
 # Legacy redsocks cleanup (from older versions)
 iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null

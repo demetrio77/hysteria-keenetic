@@ -24,12 +24,14 @@ LAN_IF="${LAN_IF:-br0}"
 FWMARK="${FWMARK:-2}"
 ROUTE_TABLE="${ROUTE_TABLE:-101}"
 FORCE_DNS="${FORCE_DNS:-1}"
+ROUTE_MODE="${ROUTE_MODE:-selective}"
 
 SINGBOX_BIN="/opt/bin/sing-box"
 SINGBOX_CONF="$BASE_DIR/sing-box.json"
 SINGBOX_MARK=200
 REDIRECT_PORT=2500
 TPROXY_PORT=2501
+DNS_TPROXY_PORT=5302
 
 DNSMASQ_CONF="$BASE_DIR/dnsmasq.conf"
 DNSCRYPT_BIN="/opt/sbin/dnscrypt-proxy"
@@ -84,6 +86,19 @@ _add_private_ip_rules() {
     done
 }
 
+# Resolve VPN server IP (for ROUTE_MODE=all to avoid routing loops)
+_get_server_ip() {
+    _host=$(echo "$HY_SERVER" | sed 's/:[0-9]*$//')
+    # If already an IP, return as-is
+    echo "$_host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && echo "$_host" && return
+    # Resolve hostname
+    if command -v dig >/dev/null 2>&1; then
+        dig +short "$_host" 2>/dev/null | grep -E '^[0-9]+\.' | head -1
+    elif command -v nslookup >/dev/null 2>&1; then
+        nslookup "$_host" 2>/dev/null | grep -A1 'Name:' | grep 'Address' | awk '{print $2}' | head -1
+    fi
+}
+
 # ── iptables setup (used by start and netfilter.d hook) ──────────
 
 setup_iptables() {
@@ -91,35 +106,70 @@ setup_iptables() {
     iptables -t nat -N HYSTERIA_REDIRECT 2>/dev/null
     iptables -t nat -F HYSTERIA_REDIRECT
 
+    # VPN server RETURN (prevent routing loops in "all" mode)
+    if [ "$ROUTE_MODE" = "all" ]; then
+        _server_ip=$(_get_server_ip)
+        if [ -n "$_server_ip" ]; then
+            iptables -t nat -A HYSTERIA_REDIRECT -d "$_server_ip" -j RETURN
+        fi
+    fi
+
     _add_private_ip_rules nat HYSTERIA_REDIRECT
 
     iptables -t nat -A HYSTERIA_REDIRECT -p tcp -j REDIRECT --to-ports "$REDIRECT_PORT"
 
+    # Remove both selective and all variants before inserting
     iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT 2>/dev/null
-    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -j HYSTERIA_REDIRECT 2>/dev/null
+
+    if [ "$ROUTE_MODE" = "all" ]; then
+        iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp -j HYSTERIA_REDIRECT
+    else
+        iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT
+    fi
 
     # === UDP: TPROXY to sing-box (mangle PREROUTING) ===
     load_tproxy_modules
     iptables -t mangle -N HYSTERIA_TPROXY 2>/dev/null
     iptables -t mangle -F HYSTERIA_TPROXY
 
+    # VPN server RETURN (prevent routing loops in "all" mode)
+    if [ "$ROUTE_MODE" = "all" ]; then
+        _server_ip=${_server_ip:-$(_get_server_ip)}
+        if [ -n "$_server_ip" ]; then
+            iptables -t mangle -A HYSTERIA_TPROXY -d "$_server_ip" -j RETURN
+        fi
+    fi
+
     _add_private_ip_rules mangle HYSTERIA_TPROXY
 
     iptables -t mangle -A HYSTERIA_TPROXY -p udp -j TPROXY --on-port "$TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK"
 
+    # Remove both selective and all variants before inserting
     iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY 2>/dev/null
-    iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY
+    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -j HYSTERIA_TPROXY 2>/dev/null
+
+    if [ "$ROUTE_MODE" = "all" ]; then
+        iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp -j HYSTERIA_TPROXY
+    else
+        iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY
+    fi
 
     # Policy routing for TPROXY
     ip rule del fwmark "0x$FWMARK" table "$ROUTE_TABLE" 2>/dev/null
     ip rule add fwmark "0x$FWMARK" table "$ROUTE_TABLE"
     ip route replace local default dev lo table "$ROUTE_TABLE"
 
-    # === DNS: redirect LAN DNS to our dnsmasq ===
-    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+    # === DNS: intercept LAN DNS queries ===
+    # UDP DNS: use TPROXY to sing-box (works for any destination IP; nat REDIRECT
+    # is broken for UDP to non-local IPs on Keenetic NDM kernel 4.9)
+    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j TPROXY --on-port "$DNS_TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK" 2>/dev/null
+    iptables -t mangle -I PREROUTING 1 -i "$LAN_IF" -p udp --dport 53 -j TPROXY --on-port "$DNS_TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK"
+    # TCP DNS: nat REDIRECT works fine for TCP
     iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
-    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
-    iptables -t nat -I PREROUTING 2 -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
+    iptables -t nat -I PREROUTING 1 -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT"
+    # Legacy: remove old UDP REDIRECT if present
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
 
     # === Force DNS (block DoH/DoT) ===
     if [ "$FORCE_DNS" = "1" ]; then
@@ -135,15 +185,19 @@ setup_iptables() {
             ipset add force_dns "$ip" 2>/dev/null
         done
 
+        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
+        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j REJECT 2>/dev/null
         iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null
         iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j DROP 2>/dev/null
-        iptables -I FORWARD 1 -i "$LAN_IF" -p tcp --dport 853 -j DROP
-        iptables -I FORWARD 2 -i "$LAN_IF" -p udp --dport 853 -j DROP
+        iptables -I FORWARD 1 -i "$LAN_IF" -p tcp --dport 853 -j REJECT --reject-with tcp-reset
+        iptables -I FORWARD 2 -i "$LAN_IF" -p udp --dport 853 -j REJECT
 
+        iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j REJECT --reject-with tcp-reset 2>/dev/null
+        iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j REJECT 2>/dev/null
         iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
         iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
-        iptables -I FORWARD 3 -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP
-        iptables -I FORWARD 4 -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP
+        iptables -I FORWARD 3 -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j REJECT --reject-with tcp-reset
+        iptables -I FORWARD 4 -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j REJECT
     fi
 }
 
@@ -266,7 +320,7 @@ _start_internal() {
     setup_iptables
     log "  iptables: TCP REDIRECT to :$REDIRECT_PORT"
     log "  iptables: UDP TPROXY to :$TPROXY_PORT (fwmark 0x$FWMARK)"
-    log "  iptables: DNS redirect to :$DNSMASQ_PORT"
+    log "  iptables: DNS TPROXY to :$DNS_TPROXY_PORT (UDP), REDIRECT to :$DNSMASQ_PORT (TCP)"
     [ "$FORCE_DNS" = "1" ] && log "  iptables: DoH/DoT blocking enabled"
 
     # ── 8. Flush conntrack ──
@@ -292,7 +346,11 @@ _start_internal() {
     fi
 
     IPCOUNT=$(ipset list "$IPSET_NAME" 2>/dev/null | tail -n +8 | wc -l)
-    log "Started. $IPCOUNT IPs in ipset. TCP via REDIRECT, UDP via TPROXY."
+    if [ "$ROUTE_MODE" = "all" ]; then
+        log "Started. Mode: ALL traffic through VPN. TCP via REDIRECT, UDP via TPROXY."
+    else
+        log "Started. Mode: selective. $IPCOUNT IPs in ipset. TCP via REDIRECT, UDP via TPROXY."
+    fi
 }
 
 # ── Generate sing-box config ─────────────────────────────────────
@@ -327,6 +385,16 @@ _generate_singbox_config() {
     "level": "warn",
     "timestamp": true
   },
+  "dns": {
+    "servers": [
+      {
+        "tag": "dnsmasq",
+        "address": "udp://127.0.0.1:$DNSMASQ_PORT",
+        "detour": "direct"
+      }
+    ],
+    "final": "dnsmasq"
+  },
   "inbounds": [
     {
       "type": "redirect",
@@ -340,6 +408,14 @@ _generate_singbox_config() {
       "listen": "0.0.0.0",
       "listen_port": $TPROXY_PORT,
       "network": "udp"
+    },
+    {
+      "type": "tproxy",
+      "tag": "dns-in",
+      "listen": "0.0.0.0",
+      "listen_port": $DNS_TPROXY_PORT,
+      "network": "udp",
+      "sniff": true
     },
     {
       "type": "socks",
@@ -365,12 +441,24 @@ _generate_singbox_config() {
     {
       "type": "direct",
       "tag": "direct"
+    },
+    {
+      "type": "dns",
+      "tag": "dns-out"
     }
   ],
   "route": {
     "auto_detect_interface": true,
     "default_mark": $SINGBOX_MARK,
     "rules": [
+      {
+        "inbound": "dns-in",
+        "outbound": "dns-out"
+      },
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
       {
         "inbound": "socks-in",
         "outbound": "hy2-out"
@@ -387,13 +475,15 @@ SINGBOX_EOF
 do_stop() {
     log "Stopping hysteria-keenetic..."
 
-    # TCP REDIRECT cleanup (nat table)
+    # TCP REDIRECT cleanup (nat table) — both selective and all variants
     iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_REDIRECT 2>/dev/null
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -j HYSTERIA_REDIRECT 2>/dev/null
     iptables -t nat -F HYSTERIA_REDIRECT 2>/dev/null
     iptables -t nat -X HYSTERIA_REDIRECT 2>/dev/null
 
-    # UDP TPROXY cleanup (mangle table)
+    # UDP TPROXY cleanup (mangle table) — both selective and all variants
     iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -m set --match-set "$IPSET_NAME" dst -j HYSTERIA_TPROXY 2>/dev/null
+    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp -j HYSTERIA_TPROXY 2>/dev/null
     iptables -t mangle -F HYSTERIA_TPROXY 2>/dev/null
     iptables -t mangle -X HYSTERIA_TPROXY 2>/dev/null
 
@@ -416,16 +506,22 @@ do_stop() {
 
     log "  iptables: redirect/tproxy cleaned"
 
-    # DoH/DoT blocking cleanup
+    # DoH/DoT blocking cleanup (both REJECT and legacy DROP variants)
+    iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null
+    iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j REJECT 2>/dev/null
     iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null
     iptables -D FORWARD -i "$LAN_IF" -p udp --dport 853 -j DROP 2>/dev/null
+    iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j REJECT --reject-with tcp-reset 2>/dev/null
+    iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j REJECT 2>/dev/null
     iptables -D FORWARD -i "$LAN_IF" -p tcp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
     iptables -D FORWARD -i "$LAN_IF" -p udp --dport 443 -m set --match-set force_dns dst -j DROP 2>/dev/null
     ipset destroy force_dns 2>/dev/null
 
-    # DNS redirect cleanup
-    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+    # DNS intercept cleanup
+    iptables -t mangle -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j TPROXY --on-port "$DNS_TPROXY_PORT" --tproxy-mark "0x$FWMARK/0x$FWMARK" 2>/dev/null
     iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
+    # Legacy: old UDP REDIRECT
+    iptables -t nat -D PREROUTING -i "$LAN_IF" -p udp --dport 53 -j REDIRECT --to-ports "$DNSMASQ_PORT" 2>/dev/null
 
     # Legacy redsocks cleanup (from older versions)
     iptables -t nat -D PREROUTING -i "$LAN_IF" -p tcp -m set --match-set "$IPSET_NAME" dst -j REDSOCKS 2>/dev/null
@@ -533,6 +629,11 @@ do_status() {
     # Routing
     echo "  Traffic routing"
     echo "  ---------------"
+    if [ "$ROUTE_MODE" = "all" ]; then
+        echo "  mode:         ALL traffic through VPN"
+    else
+        echo "  mode:         selective (ipset-matched only)"
+    fi
     if iptables -t nat -L HYSTERIA_REDIRECT -n >/dev/null 2>&1; then
         REDIR_PKTS=$(iptables -t nat -L HYSTERIA_REDIRECT -n -v 2>&1 | grep "REDIRECT" | awk '{sum+=$1} END {print sum+0}')
         echo "  TCP redirect: active ($REDIR_PKTS packets redirected to :$REDIRECT_PORT)"
@@ -583,10 +684,11 @@ do_status() {
     # DNS encryption blocking
     echo "  DNS encryption blocking"
     echo "  -----------------------"
-    if iptables -C FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null; then
+    if iptables -C FORWARD -i "$LAN_IF" -p tcp --dport 853 -j REJECT --reject-with tcp-reset 2>/dev/null \
+       || iptables -C FORWARD -i "$LAN_IF" -p tcp --dport 853 -j DROP 2>/dev/null; then
         DOH_IPS=$(ipset list force_dns 2>/dev/null | tail -n +8 | wc -l)
-        echo "  DoT block: enabled (port 853 dropped)"
-        echo "  DoH block: enabled ($DOH_IPS provider IPs blocked)"
+        echo "  DoT block: enabled (port 853 rejected)"
+        echo "  DoH block: enabled ($DOH_IPS provider IPs rejected)"
     else
         echo "  DoH/DoT block: disabled"
     fi
@@ -610,6 +712,11 @@ do_status() {
             echo "  tproxy: listening on port $TPROXY_PORT"
         else
             echo "  tproxy: NOT listening"
+        fi
+        if netstat -tlnup 2>/dev/null | grep -q ":$DNS_TPROXY_PORT"; then
+            echo "  dns-tproxy: listening on port $DNS_TPROXY_PORT"
+        else
+            echo "  dns-tproxy: NOT listening"
         fi
     else
         echo "  sing-box: not running"
