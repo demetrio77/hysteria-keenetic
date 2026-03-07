@@ -11,11 +11,11 @@ Uses [sing-box](https://sing-box.sagernet.org/) with [Hysteria 2](https://v2.hys
 ```
 LAN device
     │
-    ▼  DNS query (port 53)
-iptables PREROUTING ──► REDIRECT to dnsmasq (:5300)
+    ▼  DNS query (any destination, port 53)
+iptables mangle TPROXY ──► sing-box DNS handler (:5302)
     │
     ▼
-dnsmasq (:5300)
+sing-box ──► dnsmasq (:5300)
     ├── resolves via dnscrypt-proxy (:5301) ──► SOCKS5 ──► VPS ──► DNS
     ├── domain in blocklist? → adds IP to ipset "unblock"
     └── returns response to client
@@ -28,7 +28,8 @@ iptables PREROUTING ──► checks ipset "unblock"
 ```
 
 Why this design:
-- **REDIRECT for TCP, TPROXY for UDP.** Kernel 4.9 (Keenetic) has a TPROXY bug with long-lived TCP connections — breaks SSE streaming, Claude Code, etc. UDP TPROXY works fine, so QUIC goes through it as-is.
+- **DNS via TPROXY through sing-box.** All UDP DNS from LAN is intercepted by TPROXY and forwarded to dnsmasq. This works regardless of what DNS server clients use (8.8.8.8, 1.1.1.1, router IP, etc.) — no manual DNS configuration needed on any device. We use TPROXY instead of REDIRECT because Keenetic kernel 4.9 has a bug where `iptables nat REDIRECT` doesn't deliver UDP packets to non-local IPs. TCP DNS still uses nat REDIRECT (works fine for TCP).
+- **REDIRECT for TCP, TPROXY for UDP.** Kernel 4.9 has a TPROXY bug with long-lived TCP connections — breaks SSE streaming, Claude Code, etc. UDP TPROXY works fine, so QUIC goes through it as-is.
 - **DNS resolves through VPS.** CDNs (YouTube, Google) return IPs closest to whoever resolves. Resolving locally gives you IPs optimized for your ISP, but traffic goes through VPS in another country. Result — slow. So DNS goes through VPS too.
 - **Dynamic ipset.** IPs are added at DNS query time. No static lists going stale.
 
@@ -135,7 +136,7 @@ hysteria-keenetic start
 hysteria-keenetic status
 ```
 
-Open a blocked site from any device on your network. No client-side configuration needed — it's fully transparent.
+Open a blocked site from any device on your network. No client-side configuration needed — DNS is intercepted transparently regardless of what DNS server the device uses (8.8.8.8, 1.1.1.1, router IP, etc.).
 
 ## Configuration
 
@@ -163,6 +164,7 @@ File: `/opt/etc/hysteria-keenetic/config`
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `ROUTE_MODE` | `selective` | `selective` = only blocked domains via VPN; `all` = all traffic via VPN |
 | `FORCE_DNS` | `1` | Block DoH/DoT to prevent DNS bypass |
 | `LAN_IF` | `br0` | LAN interface |
 | `DNSMASQ_PORT` | `5300` | dnsmasq port |
@@ -197,15 +199,36 @@ hysteria-keenetic update
 ## Commands
 
 ```bash
-hysteria-keenetic start      # Start all components
-hysteria-keenetic stop       # Stop everything, clean iptables
-hysteria-keenetic restart    # Restart
-hysteria-keenetic update     # Update domain lists
-hysteria-keenetic upgrade    # Upgrade sing-box via opkg
-hysteria-keenetic status     # Show component status
+hysteria-keenetic start       # Start all components
+hysteria-keenetic stop        # Stop everything, clean iptables
+hysteria-keenetic restart     # Restart
+hysteria-keenetic update      # Update domain lists
+hysteria-keenetic upgrade     # Upgrade sing-box via opkg
+hysteria-keenetic self-update # Update everything (scripts + sing-box + domains)
+hysteria-keenetic status      # Show component status
 ```
 
 ## Additional setup
+
+### Full VPN mode (ROUTE_MODE)
+
+By default, only traffic to blocked domains goes through VPN (`ROUTE_MODE=selective`). To route **all** traffic through VPN:
+
+```
+ROUTE_MODE=all
+```
+
+In `all` mode, the VPN server IP and private networks (10.x, 192.168.x, etc.) are automatically excluded to prevent routing loops. Useful when you want all your traffic to appear from the VPN location.
+
+### Updating
+
+`self-update` downloads the latest scripts from GitHub, upgrades sing-box via opkg, refreshes domain lists, and restarts the service if it was running:
+
+```bash
+hysteria-keenetic self-update
+```
+
+Individual updates are also available: `update` for domain lists only, `upgrade` for sing-box only.
 
 ### Obfuscation (Salamander)
 

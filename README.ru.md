@@ -11,11 +11,11 @@
 ```
 Устройство в LAN
     │
-    ▼  DNS-запрос (порт 53)
-iptables PREROUTING ──► REDIRECT на dnsmasq (:5300)
+    ▼  DNS-запрос (любой адрес, порт 53)
+iptables mangle TPROXY ──► sing-box DNS handler (:5302)
     │
     ▼
-dnsmasq (:5300)
+sing-box ──► dnsmasq (:5300)
     ├── резолвит через dnscrypt-proxy (:5301) ──► SOCKS5 ──► VPS ──► DNS
     ├── домен в списке? → добавляет IP в ipset "unblock"
     └── возвращает ответ клиенту
@@ -28,7 +28,8 @@ iptables PREROUTING ──► проверяет ipset "unblock"
 ```
 
 Почему так:
-- **REDIRECT для TCP, TPROXY для UDP.** На ядре 4.9 (Keenetic) у TPROXY баг с долгоживущими TCP-соединениями — ломает SSE streaming, Claude Code и т.п. Для UDP (QUIC) проблем нет, поэтому он идёт через TPROXY как есть.
+- **DNS через TPROXY и sing-box.** Весь UDP DNS из LAN перехватывается через TPROXY и пересылается в dnsmasq. Работает независимо от того, какой DNS-сервер настроен на устройстве (8.8.8.8, 1.1.1.1, IP роутера и т.д.) — никакой ручной настройки DNS на устройствах не нужно. Используем TPROXY вместо REDIRECT, потому что на ядре Keenetic 4.9 `iptables nat REDIRECT` не доставляет UDP-пакеты на нелокальные IP. TCP DNS по-прежнему через nat REDIRECT (для TCP работает нормально).
+- **REDIRECT для TCP, TPROXY для UDP.** На ядре 4.9 у TPROXY баг с долгоживущими TCP-соединениями — ломает SSE streaming, Claude Code и т.п. Для UDP (QUIC) проблем нет, поэтому он идёт через TPROXY как есть.
 - **DNS через VPS.** CDN (YouTube, Google) отдаёт IP ближайший к тому, кто резолвит. Если резолвить локально — получишь IP для своего провайдера, а трафик пойдёт через VPS в другой стране. Результат — тормоза. Поэтому DNS тоже идёт через VPS.
 - **Динамический ipset.** IP добавляются в момент DNS-запроса, никаких статических списков которые протухают.
 
@@ -135,7 +136,7 @@ hysteria-keenetic start
 hysteria-keenetic status
 ```
 
-Откройте заблокированный сайт с любого устройства в сети. Настройка на клиентах не нужна — всё прозрачно.
+Откройте заблокированный сайт с любого устройства в сети. Настройка DNS на клиентах не нужна — DNS перехватывается прозрачно независимо от того, какой DNS-сервер использует устройство (8.8.8.8, 1.1.1.1, IP роутера и т.д.).
 
 ## Конфигурация
 
@@ -163,6 +164,7 @@ hysteria-keenetic status
 
 | Параметр | По умолчанию | Описание |
 |----------|-------------|----------|
+| `ROUTE_MODE` | `selective` | `selective` = только заблокированные домены через VPN; `all` = весь трафик через VPN |
 | `FORCE_DNS` | `1` | Блокировать DoH/DoT чтобы клиенты не обходили наш DNS |
 | `LAN_IF` | `br0` | LAN-интерфейс |
 | `DNSMASQ_PORT` | `5300` | Порт dnsmasq |
@@ -197,15 +199,36 @@ hysteria-keenetic update
 ## Команды
 
 ```bash
-hysteria-keenetic start      # Запуск
-hysteria-keenetic stop       # Остановка + очистка iptables
-hysteria-keenetic restart    # Перезапуск
-hysteria-keenetic update     # Обновить списки доменов
-hysteria-keenetic upgrade    # Обновить sing-box
-hysteria-keenetic status     # Статус компонентов
+hysteria-keenetic start       # Запуск
+hysteria-keenetic stop        # Остановка + очистка iptables
+hysteria-keenetic restart     # Перезапуск
+hysteria-keenetic update      # Обновить списки доменов
+hysteria-keenetic upgrade     # Обновить sing-box
+hysteria-keenetic self-update # Обновить всё (скрипты + sing-box + домены)
+hysteria-keenetic status      # Статус компонентов
 ```
 
 ## Дополнительно
+
+### Полный VPN (ROUTE_MODE)
+
+По умолчанию через VPN идёт только трафик к заблокированным доменам (`ROUTE_MODE=selective`). Чтобы весь трафик шёл через VPN:
+
+```
+ROUTE_MODE=all
+```
+
+В режиме `all` IP VPN-сервера и приватные сети (10.x, 192.168.x и т.д.) автоматически исключаются, чтобы не было петель маршрутизации. Полезно, когда нужно, чтобы весь трафик шёл от IP VPN-сервера.
+
+### Обновление
+
+`self-update` скачивает последние скрипты с GitHub, обновляет sing-box через opkg, обновляет списки доменов и перезапускает сервис если он был запущен:
+
+```bash
+hysteria-keenetic self-update
+```
+
+Также доступны отдельные команды: `update` — только списки доменов, `upgrade` — только sing-box.
 
 ### Обфускация (Salamander)
 

@@ -597,6 +597,86 @@ do_upgrade() {
     log "Restart hysteria-keenetic to use new version"
 }
 
+# ── Self-update ──────────────────────────────────────────────────
+
+do_self_update() {
+    log "Self-update: updating everything..."
+
+    REPO_URL="https://github.com/dnikonov/hysteria-keenetic/archive/main.tar.gz"
+    TMP_DIR="/tmp/hysteria-keenetic-update"
+
+    # 1. Download latest scripts from GitHub
+    log "  Downloading latest version..."
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+    if ! curl -fsSL -o "$TMP_DIR/main.tar.gz" "$REPO_URL"; then
+        log "Error: Failed to download from GitHub"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+
+    tar xzf "$TMP_DIR/main.tar.gz" -C "$TMP_DIR" 2>/dev/null
+    SRC_DIR="$TMP_DIR/hysteria-keenetic-main"
+    if [ ! -d "$SRC_DIR" ]; then
+        log "Error: Failed to extract archive"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+
+    # 2. Update scripts (preserve config and custom-domains.txt)
+    log "  Updating scripts..."
+    for f in scripts/manage.sh scripts/update-domains.sh scripts/netfilter-hook.sh uninstall.sh install.sh; do
+        if [ -f "$SRC_DIR/$f" ]; then
+            cp "$SRC_DIR/$f" "$BASE_DIR/$f" 2>/dev/null && log "    updated $f" || true
+        fi
+    done
+    # Update config.example (for reference, not the active config)
+    [ -f "$SRC_DIR/config.example" ] && cp "$SRC_DIR/config.example" "$BASE_DIR/config.example" 2>/dev/null
+
+    # Update netfilter hook
+    if [ -f "$SRC_DIR/scripts/netfilter-hook.sh" ]; then
+        cp "$SRC_DIR/scripts/netfilter-hook.sh" /opt/etc/ndm/netfilter.d/100-hysteria-keenetic.sh 2>/dev/null
+        chmod +x /opt/etc/ndm/netfilter.d/100-hysteria-keenetic.sh 2>/dev/null
+    fi
+
+    # Update init script
+    if [ -f "$SRC_DIR/scripts/manage.sh" ]; then
+        # Recreate symlink in case it's stale
+        ln -sf "$BASE_DIR/scripts/manage.sh" /opt/bin/hysteria-keenetic 2>/dev/null
+    fi
+
+    rm -rf "$TMP_DIR"
+    log "  Scripts updated."
+
+    # 3. Upgrade sing-box via opkg
+    log "  Checking sing-box updates..."
+    CURRENT_VER=$("$SINGBOX_BIN" version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+    opkg update >/dev/null 2>&1
+    AVAIL_VER=$(opkg info sing-box-go 2>/dev/null | grep '^Version' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    if [ -n "$AVAIL_VER" ] && [ "$CURRENT_VER" != "$AVAIL_VER" ]; then
+        log "  sing-box: $CURRENT_VER -> $AVAIL_VER"
+        opkg upgrade sing-box-go 2>&1 | while read -r line; do log "    $line"; done
+    else
+        log "  sing-box: v$CURRENT_VER (up to date)"
+    fi
+
+    # 4. Update domain lists
+    log "  Updating domain lists..."
+    sh "$UPDATE_SCRIPT"
+
+    # 5. Restart if running
+    if pidof sing-box >/dev/null 2>&1; then
+        log "  Restarting service..."
+        do_stop
+        sleep 2
+        do_start
+    else
+        log "  Service not running, skipping restart."
+    fi
+
+    log "Self-update complete."
+}
+
 # ── Status ───────────────────────────────────────────────────────
 
 do_status() {
@@ -737,12 +817,13 @@ do_status() {
 # ── Main ─────────────────────────────────────────────────────────
 
 case "$1" in
-    start)   do_start ;;
-    stop)    do_stop ;;
-    restart) do_stop; sleep 2; do_start ;;
-    update)  do_update ;;
-    upgrade) do_upgrade ;;
-    status)  do_status ;;
+    start)       do_start ;;
+    stop)        do_stop ;;
+    restart)     do_stop; sleep 2; do_start ;;
+    update)      do_update ;;
+    upgrade)     do_upgrade ;;
+    self-update) do_self_update ;;
+    status)      do_status ;;
     firewall-reload)
         # Called by /opt/etc/ndm/netfilter.d/ hook when Keenetic rebuilds firewall.
         # Only re-apply iptables rules if sing-box is running.
@@ -755,14 +836,15 @@ case "$1" in
     *)
         echo "hysteria-keenetic — selective VPN routing for Keenetic"
         echo ""
-        echo "Usage: $0 {start|stop|restart|update|upgrade|status}"
+        echo "Usage: $0 {start|stop|restart|update|upgrade|self-update|status}"
         echo ""
-        echo "  start    Start all components"
-        echo "  stop     Stop all, clean iptables"
-        echo "  restart  Stop + start"
-        echo "  update   Re-download domain lists"
-        echo "  upgrade  Update sing-box via opkg"
-        echo "  status   Show status of all components"
+        echo "  start       Start all components"
+        echo "  stop        Stop all, clean iptables"
+        echo "  restart     Stop + start"
+        echo "  update      Re-download domain lists"
+        echo "  upgrade     Update sing-box via opkg"
+        echo "  self-update Update everything (scripts + sing-box + domains)"
+        echo "  status      Show status of all components"
         echo ""
         echo "Config:  $CONFIG"
         echo "Domains: $BASE_DIR/custom-domains.txt"
