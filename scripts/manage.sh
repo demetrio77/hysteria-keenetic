@@ -295,6 +295,15 @@ _start_internal() {
     fi
 
     # ── 5. dnsmasq ──
+    # Safety: /tmp is a RAM-backed tmpfs on Keenetic. A leftover debug edit
+    # (log-queries + log-facility=/tmp/...) makes dnsmasq log every query to RAM
+    # unbounded → fills tmpfs → OOMs the router. Strip it before every start.
+    if grep -qE '^[[:space:]]*(log-queries|log-facility=)' "$DNSMASQ_CONF" 2>/dev/null; then
+        sed -i '/^[[:space:]]*log-queries/d; /^[[:space:]]*log-facility=/d' "$DNSMASQ_CONF"
+        rm -f /tmp/dnsmasq-debug.log
+        log "  dnsmasq: stripped debug logging to prevent tmpfs OOM"
+    fi
+
     DNSMASQ_PID=$(cat "$DNSMASQ_PID_FILE" 2>/dev/null)
     if [ -n "$DNSMASQ_PID" ] && [ -d "/proc/$DNSMASQ_PID" ]; then
         log "  dnsmasq: already running"
@@ -602,7 +611,7 @@ do_upgrade() {
 do_self_update() {
     log "Self-update: updating everything..."
 
-    REPO_URL="https://github.com/dnikonov/hysteria-keenetic/archive/main.tar.gz"
+    REPO_URL="https://github.com/DenisNikonov/hysteria-keenetic/archive/main.tar.gz"
     TMP_DIR="/tmp/hysteria-keenetic-update"
 
     # 1. Download latest scripts from GitHub
@@ -752,6 +761,17 @@ do_status() {
         echo "  last updated: $(ls -l "$BASE_DIR/domains.lst" 2>/dev/null | awk '{print $6, $7, $8}')"
     else
         echo "  domains.lst: not found (run: hysteria-keenetic update)"
+    fi
+    echo ""
+
+    # System (RAM-backed /tmp is the OOM risk on Keenetic)
+    echo "  System"
+    echo "  ------"
+    TMP_USE=$(df /tmp 2>/dev/null | awk 'NR==2{print $5}')
+    echo "  /tmp (RAM):  $(df -h /tmp 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5" used)"}')"
+    TMP_PCT=$(echo "$TMP_USE" | tr -d '%')
+    if [ -n "$TMP_PCT" ] && [ "$TMP_PCT" -ge 80 ]; then
+        echo "  WARNING: /tmp tmpfs ${TMP_USE} full — OOM risk. Inspect: ls -laS /tmp"
     fi
     echo ""
 
