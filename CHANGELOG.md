@@ -13,9 +13,11 @@
     start. The service writes all process output to `/dev/null` by design, so query
     logging is never shipped.
 
-- **Broken `self-update`.** `REPO_URL` pointed at `github.com/dnikonov/...`
-  (404 — wrong account), so `manage.sh self-update` always failed to download and
-  no user could pull script updates. Corrected to `github.com/DenisNikonov/...`.
+- **Broken install / self-update URLs (wrong GitHub account).** Both READMEs'
+  install one-liner and `manage.sh` self-update pointed at
+  `github.com/dnikonov/...` (404 — wrong account), so a fresh `curl … main.tar.gz`
+  install failed outright and no user could pull script updates. Corrected to
+  `github.com/DenisNikonov/...` in `README.md`, `README.ru.md`, and `manage.sh`.
   This is what lets the OOM fix above actually reach installed routers.
 
 ### Added
