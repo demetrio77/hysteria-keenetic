@@ -116,7 +116,7 @@ systemctl enable --now hysteria-server
 ```bash
 ssh root@your-router-ip
 cd /tmp
-curl -L -o hk.tar.gz https://github.com/dnikonov/hysteria-keenetic/archive/main.tar.gz
+curl -L -o hk.tar.gz https://github.com/DenisNikonov/hysteria-keenetic/archive/main.tar.gz
 tar xzf hk.tar.gz
 cd hysteria-keenetic-main
 
