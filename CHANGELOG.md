@@ -3,6 +3,23 @@
 ## [Unreleased]
 
 ### Fixed
+- **Domain list frozen in a broken state by the version check.** A flaky
+  `update` run (VPN/network down at cron time, or GitHub 5xx) could fail most
+  source downloads and produce a gutted list — in one case only 484 domains with
+  **zero** YouTube/Google entries, so only Instagram (which happened to survive)
+  routed through the VPN. Two missing guards made it permanent:
+  - The version marker (`.lists-version`) was saved even when downloads failed.
+    The daily version-check then matched remote == local and `exit 0`'d without
+    re-downloading, so the broken list stayed broken until a manual
+    `update-domains.sh --force`.
+  - The ipset-config regeneration only rejected an *empty* result, not a
+    *gutted* one, so the tiny list overwrote the good one.
+  - `update-domains.sh` now counts per-source download failures, refuses to
+    replace a good list with a smaller one from a failed run (or let a healthy
+    list collapse below a 1000-domain floor), and skips saving the version marker
+    whenever any source failed — so the next run retries instead of
+    short-circuiting. A rejected run keeps the previous lists and exits non-zero.
+
 - **Router OOM from dnsmasq debug logging on tmpfs.** On Keenetic, `/tmp` is a
   RAM-backed tmpfs (~244 MB). A leftover debug edit in `dnsmasq.conf`
   (`log-queries` + `log-facility=/tmp/dnsmasq-debug.log`) made dnsmasq write every
