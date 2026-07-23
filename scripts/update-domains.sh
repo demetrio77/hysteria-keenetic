@@ -128,6 +128,7 @@ while read -r service; do
                 log "  + $service: $_count entries (upstream fallback)"
             else
                 rm -f "$_dldir/$_safename.tmp"
+                : > "$_dldir/_fail.$_safename"
                 log "  ! Failed to download: $service"
             fi
         fi
@@ -137,6 +138,7 @@ wait
 
 # Merge all downloaded files
 cat "$_dldir"/*.tmp > "$DOMAINS_FILE.tmp" 2>/dev/null
+_fail_count=$(ls "$_dldir"/_fail.* 2>/dev/null | wc -l | tr -d ' ')
 rm -rf "$_dldir"
 
 # Clean: remove BOM, carriage returns, whitespace
@@ -150,18 +152,49 @@ rm -f "$DOMAINS_FILE.tmp"
 # Separate domains from IP/CIDR entries
 # IP/CIDR: lines matching N.N.N.N or N.N.N.N/M
 grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' "$DOMAINS_FILE.clean" \
-    | sort -u > "$STATIC_IPS_FILE"
+    | sort -u > "$STATIC_IPS_FILE.new"
 
 # Domains: everything else (lowercase, validate format)
 grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' "$DOMAINS_FILE.clean" \
     | tr '[:upper:]' '[:lower:]' \
     | grep '^[a-z0-9]' \
     | grep -v '[^a-z0-9._-]' \
-    | sort -u > "$DOMAINS_FILE"
+    | sort -u > "$DOMAINS_FILE.new"
 rm -f "$DOMAINS_FILE.clean"
 
-TOTAL_DOMAINS=$(wc -l < "$DOMAINS_FILE")
-TOTAL_IPS=$(wc -l < "$STATIC_IPS_FILE")
+NEW_DOMAINS=$(wc -l < "$DOMAINS_FILE.new")
+NEW_IPS=$(wc -l < "$STATIC_IPS_FILE.new")
+OLD_DOMAINS=0
+[ -f "$DOMAINS_FILE" ] && OLD_DOMAINS=$(wc -l < "$DOMAINS_FILE")
+
+# ── Sanity gate: refuse to commit a gutted/partial download ──────
+# A flaky run (VPN/network down, GitHub 5xx) can fail most source
+# downloads and yield a tiny list. Without this guard that tiny list
+# would (a) overwrite the good one and (b) let the version marker be
+# saved below, so the daily version-check would then short-circuit
+# forever and the list would stay broken until a manual --force.
+# Two guards: never let a failed run shrink a good list, and never
+# let a healthy list collapse below a floor.
+MIN_DOMAINS=1000
+_accept=1
+if [ "$_fail_count" -gt 0 ] && [ "$NEW_DOMAINS" -lt "$OLD_DOMAINS" ]; then
+    _accept=0
+fi
+if [ "$OLD_DOMAINS" -ge "$MIN_DOMAINS" ] && [ "$NEW_DOMAINS" -lt "$MIN_DOMAINS" ]; then
+    _accept=0
+fi
+
+if [ "$_accept" = "0" ]; then
+    log "ERROR: download looks broken ($NEW_DOMAINS domains, ${_fail_count} source(s) failed, previous $OLD_DOMAINS) — keeping previous lists, NOT saving version"
+    rm -f "$DOMAINS_FILE.new" "$STATIC_IPS_FILE.new"
+    exit 1
+fi
+
+mv "$DOMAINS_FILE.new" "$DOMAINS_FILE"
+mv "$STATIC_IPS_FILE.new" "$STATIC_IPS_FILE"
+
+TOTAL_DOMAINS="$NEW_DOMAINS"
+TOTAL_IPS="$NEW_IPS"
 log "Total unique domains: $TOTAL_DOMAINS"
 [ "$TOTAL_IPS" -gt 0 ] && log "Total static IPs/CIDRs: $TOTAL_IPS"
 
@@ -203,10 +236,15 @@ if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
     fi
 fi
 
-# ── Save version after successful update ─────────────────────────
-if [ -n "${_remote_ver:-}" ]; then
+# ── Save version only after a fully successful update ────────────
+# If any source failed, leave the version marker unchanged so the
+# next run re-downloads instead of short-circuiting on a version
+# match with an incomplete list.
+if [ -n "${_remote_ver:-}" ] && [ "${_fail_count:-0}" = "0" ]; then
     echo "$_remote_ver" > "$VERSION_FILE"
     log "Version saved: $_remote_ver"
+elif [ "${_fail_count:-0}" != "0" ]; then
+    log "Skipped version save: ${_fail_count} source(s) failed — will retry next run"
 fi
 
 log "Update complete."
