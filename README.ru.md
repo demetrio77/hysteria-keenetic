@@ -124,11 +124,14 @@ cp config.example config
 vi config
 # HY_SERVER=ip-vps:443       (обязательно)
 # HY_PASSWORD=пароль          (обязательно)
+# HY_SNI=ваш-домен.com        (если сертификат на домен; в HY_SERVER оставьте IP)
 # HY_TLS_INSECURE=1           (если самоподписанный сертификат)
 
 sh install.sh
 hysteria-keenetic start
 ```
+
+> **В `HY_SERVER` указывайте IP сервера, а не домен.** Домен sing-box резолвит через DNS-цепочку самого туннеля (dnsmasq → dnscrypt-proxy → туннель), а он ещё не поднят — замкнутый круг, туннель так и не поднимается. Если сертификат выпущен на домен (вариант А), домен пропишите в `HY_SNI`.
 
 ### 3. Проверка
 
@@ -146,7 +149,7 @@ hysteria-keenetic status
 
 | Параметр | Описание | Пример |
 |----------|----------|--------|
-| `HY_SERVER` | Адрес сервера | `1.2.3.4:443` |
+| `HY_SERVER` | **IP** и порт сервера (не домен — см. «Быстрый старт») | `1.2.3.4:443` |
 | `HY_PASSWORD` | Пароль | |
 | `SERVICES` | Сервисы через запятую | `Youtube,Google,Openai` |
 
@@ -156,6 +159,7 @@ hysteria-keenetic status
 |----------|-------------|----------|
 | `HY_BW_UP` | `50 mbps` | Upload (Brutal CC). `0` = BBR |
 | `HY_BW_DOWN` | `100 mbps` | Download (Brutal CC). `0` = BBR |
+| `HY_SNI` | хост из `HY_SERVER` | Имя сервера для TLS (домен сертификата). Нужен, если в `HY_SERVER` указан IP |
 | `HY_TLS_INSECURE` | `0` | `1` для самоподписанных сертификатов |
 | `HY_OBFS_PASSWORD` | *(пусто)* | Salamander обфускация (см. ниже) |
 | `HY_QUIC_TUNING` | `0` | `1` для больших QUIC-буферов на быстрых линиях |
@@ -288,6 +292,12 @@ Entware живёт на флешке/разделе opt — обновление
 **Сайт не открывается через VPN** — добавьте в `custom-domains.txt` и сделайте `hysteria-keenetic update`. Для сервисов с выделенными IP (не обнаруживаемыми через DNS) — добавьте CIDR.
 
 **"HY_SERVER is not configured"** — `vi /opt/etc/hysteria-keenetic/config`
+
+**Туннель не поднимается, в логе sing-box сплошные `context deadline exceeded`** — в `HY_SERVER` указан домен. Чтобы его зарезолвить, sing-box идёт в dnsmasq → dnscrypt-proxy, а тот ходит через ещё не поднятый туннель — замкнутый круг. Укажите IP сервера в `HY_SERVER`, а домен — в `HY_SNI`:
+```
+HY_SERVER="1.2.3.4:443"
+HY_SNI="ваш-домен.com"
+```
 
 **Диагностика:**
 ```bash

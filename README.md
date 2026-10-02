@@ -124,11 +124,14 @@ cp config.example config
 vi config
 # HY_SERVER=your-vps-ip:443   (required)
 # HY_PASSWORD=password          (required)
+# HY_SNI=your-domain.com        (if the cert is for a domain; keep the IP in HY_SERVER)
 # HY_TLS_INSECURE=1             (if using self-signed cert)
 
 sh install.sh
 hysteria-keenetic start
 ```
+
+> **Put the server IP in `HY_SERVER`, not a domain.** sing-box resolves the server domain through the tunnel's own DNS chain (dnsmasq → dnscrypt-proxy → tunnel), which isn't up yet — a loop, and the tunnel never comes up. If the server cert is for a domain (option A), put the domain in `HY_SNI`.
 
 ### 3. Verify
 
@@ -146,7 +149,7 @@ File: `/opt/etc/hysteria-keenetic/config`
 
 | Parameter | Description | Example |
 |-----------|-------------|---------|
-| `HY_SERVER` | Server address | `1.2.3.4:443` |
+| `HY_SERVER` | Server **IP** and port (not a domain — see Quick start) | `1.2.3.4:443` |
 | `HY_PASSWORD` | Server password | |
 | `SERVICES` | Comma-separated services | `Youtube,Google,Openai` |
 
@@ -156,6 +159,7 @@ File: `/opt/etc/hysteria-keenetic/config`
 |-----------|---------|-------------|
 | `HY_BW_UP` | `50 mbps` | Upload speed (Brutal CC). `0` = BBR |
 | `HY_BW_DOWN` | `100 mbps` | Download speed (Brutal CC). `0` = BBR |
+| `HY_SNI` | host from `HY_SERVER` | TLS server name (cert domain). Set it when `HY_SERVER` is an IP |
 | `HY_TLS_INSECURE` | `0` | `1` for self-signed server certs |
 | `HY_OBFS_PASSWORD` | *(empty)* | Salamander obfuscation (see below) |
 | `HY_QUIC_TUNING` | `0` | `1` for large QUIC buffers on fast links |
@@ -288,6 +292,12 @@ Entware lives on a USB drive / opt partition — firmware updates don't touch it
 **Site doesn't load through VPN** — add it to `custom-domains.txt` and run `hysteria-keenetic update`. For services with dedicated IPs (not discoverable via DNS) — add CIDR entries.
 
 **"HY_SERVER is not configured"** — `vi /opt/etc/hysteria-keenetic/config`
+
+**Tunnel doesn't come up, sing-box log is full of `context deadline exceeded`** — `HY_SERVER` contains a domain. To resolve it, sing-box asks dnsmasq → dnscrypt-proxy, which goes through the tunnel that isn't up yet — a loop. Put the server IP in `HY_SERVER` and the domain in `HY_SNI`:
+```
+HY_SERVER="1.2.3.4:443"
+HY_SNI="your-domain.com"
+```
 
 **Diagnostics:**
 ```bash
