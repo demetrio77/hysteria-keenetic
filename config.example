@@ -8,6 +8,12 @@
 HY_SERVER="your-server.com:443"
 HY_PASSWORD="your-password-here"
 
+# TLS SNI (server certificate domain). Recommended: put the server IP in
+# HY_SERVER and the domain here. With a domain in HY_SERVER, sing-box must
+# resolve it via DNS, which itself goes through the not-yet-up tunnel → loop.
+# Default: host part of HY_SERVER.
+#HY_SNI="your-server.com"
+
 # ── Services to unblock ──────────────────────────────────────────
 # Comma-separated list. See README for full list of available services.
 # "custom" loads domains from custom-domains.txt

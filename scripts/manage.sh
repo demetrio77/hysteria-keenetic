@@ -374,6 +374,10 @@ _generate_singbox_config() {
     TLS_INSECURE="false"
     [ "$HY_TLS_INSECURE" = "1" ] && TLS_INSECURE="true"
 
+    # SNI: lets HY_SERVER be an IP so the tunnel doesn't need DNS to come up
+    # (DNS itself goes through the tunnel — resolving the server name is a loop)
+    HY_SNI="${HY_SNI:-$HY_HOST}"
+
     # Obfuscation block
     OBFS_BLOCK=""
     if [ -n "$HY_OBFS_PASSWORD" ]; then
@@ -444,7 +448,8 @@ _generate_singbox_config() {
       $BW_BLOCK
       "tls": {
         "enabled": true,
-        "insecure": $TLS_INSECURE
+        "insecure": $TLS_INSECURE,
+        "server_name": "$HY_SNI"
       }
     },
     {
