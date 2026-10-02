@@ -611,7 +611,7 @@ do_upgrade() {
 do_self_update() {
     log "Self-update: updating everything..."
 
-    REPO_URL="https://github.com/DenisNikonov/hysteria-keenetic/archive/main.tar.gz"
+    REPO_URL="https://github.com/demetrio77/hysteria-keenetic/archive/main.tar.gz"
     TMP_DIR="/tmp/hysteria-keenetic-update"
 
     # 1. Download latest scripts from GitHub
