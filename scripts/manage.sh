@@ -853,8 +853,9 @@ case "$1" in
         # Called by /opt/etc/ndm/netfilter.d/ hook when Keenetic rebuilds firewall.
         # Only re-apply iptables rules if sing-box is running.
         if pidof sing-box >/dev/null 2>&1; then
+            # No conntrack flush here: NDM calls this on every firewall rebuild,
+            # and flushing kills established REDIRECT'ed TCP streams (SSE etc.)
             setup_iptables
-            conntrack -F 2>/dev/null
             log "iptables rules restored (firewall reload)"
         fi
     ;;
