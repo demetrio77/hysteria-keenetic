@@ -397,9 +397,10 @@ _generate_singbox_config() {
   "dns": {
     "servers": [
       {
+        "type": "udp",
         "tag": "dnsmasq",
-        "address": "udp://127.0.0.1:$DNSMASQ_PORT",
-        "detour": "direct"
+        "server": "127.0.0.1",
+        "server_port": $DNSMASQ_PORT
       }
     ],
     "final": "dnsmasq"
@@ -423,8 +424,7 @@ _generate_singbox_config() {
       "tag": "dns-in",
       "listen": "0.0.0.0",
       "listen_port": $DNS_TPROXY_PORT,
-      "network": "udp",
-      "sniff": true
+      "network": "udp"
     },
     {
       "type": "socks",
@@ -450,10 +450,6 @@ _generate_singbox_config() {
     {
       "type": "direct",
       "tag": "direct"
-    },
-    {
-      "type": "dns",
-      "tag": "dns-out"
     }
   ],
   "route": {
@@ -462,11 +458,15 @@ _generate_singbox_config() {
     "rules": [
       {
         "inbound": "dns-in",
-        "outbound": "dns-out"
+        "action": "sniff"
+      },
+      {
+        "inbound": "dns-in",
+        "action": "hijack-dns"
       },
       {
         "protocol": "dns",
-        "outbound": "dns-out"
+        "action": "hijack-dns"
       },
       {
         "inbound": "socks-in",
