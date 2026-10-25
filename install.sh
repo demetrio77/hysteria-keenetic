@@ -23,6 +23,13 @@ echo ""
 [ "$(id -u)" = "0" ] || err "Run as root"
 command -v opkg >/dev/null 2>&1 || err "Entware (opkg) not found"
 
+# ipset/iptables are needed by the Netfilter check below; without them the
+# check fails even when the kernel modules are fine
+opkg update
+for pkg in iptables ipset; do
+    opkg list-installed | grep -q "^$pkg " || opkg install "$pkg" || log "  WARNING: failed to install $pkg"
+done
+
 # Check for Netfilter kernel modules (required for ipset matching)
 netfilter_ok=1
 ipset create _hy_test_set hash:net 2>/dev/null || netfilter_ok=0
@@ -69,7 +76,6 @@ fi
 # ── Install dependencies ─────────────────────────────────────────
 
 log "Installing dependencies..."
-opkg update
 for pkg in iptables ipset dnsmasq-full curl ca-certificates conntrack bind-dig dnscrypt-proxy2 sing-box-go; do
     if opkg list-installed | grep -q "^$pkg "; then
         log "  $pkg: already installed"
