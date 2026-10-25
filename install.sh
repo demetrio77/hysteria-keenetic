@@ -241,8 +241,8 @@ log "Netfilter hook: /opt/etc/ndm/netfilter.d/100-hysteria.sh"
 CRON_SCHEDULE="${CRON_SCHEDULE:-0 4 * * *}"
 CRON_LINE="$CRON_SCHEDULE $INSTALL_DIR/scripts/manage.sh update >/dev/null 2>&1"
 
-# Ensure crontabs directory exists
-mkdir -p /opt/etc/crontabs
+# Ensure crontabs directories exist (Entware crontab uses /opt/var/spool/cron/crontabs)
+mkdir -p /opt/etc/crontabs /opt/var/spool/cron/crontabs
 
 # Add cron if not exists
 if crontab -l 2>/dev/null | grep -q "hysteria-keenetic"; then
